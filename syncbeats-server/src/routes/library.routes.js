@@ -8,15 +8,15 @@ const router = express.Router();
 
 const songSchema = z.object({
   title: z.string(),
-  artist: z.string().optional(),
-  album: z.string().optional(),
+  artist: z.string().nullable().optional(),
+  album: z.string().nullable().optional(),
   duration_ms: z.number(),
   file_path: z.string(),
   file_hash: z.string(),
   format: z.enum(['mp3', 'wav', 'm4a', 'aac', 'flac']),
-  file_size: z.number().optional(),
-  fingerprint: z.string().optional(),
-  artwork_url: z.string().optional()
+  file_size: z.number().nullable().optional(),
+  fingerprint: z.string().nullable().optional(),
+  artwork_url: z.string().nullable().optional()
 });
 
 const syncLibrarySchema = z.object({

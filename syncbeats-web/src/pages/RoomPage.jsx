@@ -6,6 +6,8 @@ import { usePlayer } from '../contexts/PlayerContext';
 import { useChat } from '../hooks/useChat';
 import { useQueue } from '../hooks/useQueue';
 import SongScannerService from '../services/songScanner';
+import ApiService from '../services/api';
+
 import { 
   Play, Pause, SkipForward, Volume2, Users, MessageSquare, 
   Send, Smile, Copy, LogOut, ShieldAlert, Award, FileAudio, 
@@ -84,24 +86,44 @@ const RoomPage = () => {
     const files = Array.from(e.target.files);
     if (files.length === 0) return;
 
-    const scanned = await SongScannerService.scanBatch(files);
-    
-    // Register file references inside context to make it play locally
-    setLocalSongs(prev => {
-      const updated = [...prev];
-      for (const s of scanned) {
-        if (!updated.some(item => item.file_hash === s.file_hash)) {
-          updated.push(s);
-        }
-      }
-      return updated;
-    });
+    try {
+      const scanned = await SongScannerService.scanBatch(files);
+      if (scanned.length === 0) return;
 
-    // Notify backend about scanning (allows matches index lookup)
-    // For MVP, we can register the metadata via REST sync.
-    // For demo purposes, we will mock API register or directly append
-    console.log('Local library updated:', scanned);
-    setShowScanner(false);
+      // Filter out fileRef as it's a binary reference and cannot be serialized
+      const songsToSync = scanned.map(({ fileRef, artwork_url, ...s }) => s);
+      const res = await ApiService.post('/library/sync', { songs: songsToSync });
+
+      if (res.success && res.data.songs) {
+        // Map backend IDs and keep fileRef / artwork_url for local playback/UI
+        const synced = res.data.songs.map(syncedSong => {
+          const original = scanned.find(s => s.file_hash === syncedSong.file_hash);
+          return {
+            ...syncedSong,
+            fileRef: original ? original.fileRef : null,
+            artwork_url: original ? original.artwork_url : null
+          };
+        });
+
+        // Register file references inside context to make it play locally
+        setLocalSongs(prev => {
+          const updated = [...prev];
+          for (const s of synced) {
+            if (!updated.some(item => item.file_hash === s.file_hash)) {
+              updated.push(s);
+            }
+          }
+          return updated;
+        });
+
+        console.log('Local library synced & updated:', synced);
+      }
+    } catch (err) {
+      console.error('Failed to sync library:', err);
+      alert('Failed to sync songs with server. Please try again.');
+    } finally {
+      setShowScanner(false);
+    }
   };
 
   const formatTime = (ms) => {
@@ -359,96 +381,170 @@ const RoomPage = () => {
           flexDirection: 'column',
           overflow: 'hidden'
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', marginBottom: '20px' }}>
-            <h3 style={{ fontSize: '16px', fontWeight: '700', margin: '0' }}>Shared Queue</h3>
-            
-            <button 
-              className="gradient-btn"
-              onClick={() => setShowScanner(true)}
-              style={{
-                marginLeft: 'auto',
-                padding: '6px 12px',
-                fontSize: '12px',
-                borderRadius: '8px'
-              }}
-            >
-              <Plus size={14} />
-              Add Songs
-            </button>
+          {/* Queue Section */}
+          <div style={{ display: 'flex', flexDirection: 'column', flex: 1.2, overflow: 'hidden', marginBottom: '20px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', marginBottom: '16px' }}>
+              <h3 style={{ fontSize: '16px', fontWeight: '700', margin: '0' }}>Shared Queue</h3>
+              
+              <button 
+                className="gradient-btn"
+                onClick={() => setShowScanner(true)}
+                style={{
+                  marginLeft: 'auto',
+                  padding: '6px 12px',
+                  fontSize: '12px',
+                  borderRadius: '8px'
+                }}
+              >
+                <Plus size={14} />
+                Add Songs
+              </button>
+            </div>
+
+            {/* Queue List */}
+            <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {queue.length > 0 ? (
+                queue.map((item, idx) => {
+                  const hasLocal = localSongs.some(s => s.file_hash === item.file_hash);
+                  return (
+                    <div 
+                      key={item.id}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        padding: '12px 16px',
+                        background: 'rgba(255, 255, 255, 0.02)',
+                        border: '1px solid rgba(255, 255, 255, 0.04)',
+                        borderRadius: '12px'
+                      }}
+                    >
+                      <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                        <span style={{ fontSize: '14px', fontWeight: '600', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>{item.title}</span>
+                        <span style={{ fontSize: '12px', color: '#94a3b8', marginTop: '2px', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                          {item.artist} • added by {item.added_by_name}
+                        </span>
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginLeft: 'auto', flexShrink: 0 }}>
+                        {/* Local Availability Badge */}
+                        <div style={{
+                          padding: '2px 6px',
+                          borderRadius: '4px',
+                          fontSize: '10px',
+                          fontWeight: '700',
+                          background: hasLocal ? 'rgba(34, 197, 94, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                          color: hasLocal ? '#22c55e' : '#ef4444',
+                          border: `1px solid ${hasLocal ? 'rgba(34, 197, 94, 0.2)' : 'rgba(239, 68, 68, 0.2)'}`
+                        }}>
+                          {hasLocal ? 'LOCAL' : 'MISSING'}
+                        </div>
+
+                        {/* Play Button for Host */}
+                        {isHost && hasLocal && (
+                          <button 
+                            onClick={() => emitPlay(item.song_id, 0)}
+                            style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#8b5cf6', display: 'flex', alignItems: 'center', padding: '4px' }}
+                            title="Play Song Now"
+                          >
+                            <Play size={14} fill="#8b5cf6" />
+                          </button>
+                        )}
+
+                        {/* Vote Buttons */}
+                        <button 
+                          onClick={() => voteOnItem(item.id, 'up')}
+                          style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#94a3b8' }}
+                        >
+                          <ArrowUp size={16} />
+                        </button>
+                        <span style={{ fontSize: '13px', fontWeight: '700' }}>
+                          {(item.upvotes || 0) - (item.downvotes || 0)}
+                        </span>
+                        <button 
+                          onClick={() => voteOnItem(item.id, 'down')}
+                          style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#94a3b8' }}
+                        >
+                          <ArrowDown size={16} />
+                        </button>
+
+                        {isHost && (
+                          <button 
+                            onClick={() => removeFromQueue(item.id)}
+                            style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#ef4444', marginLeft: '6px' }}
+                          >
+                            <Trash size={14} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              ) : (
+                <div style={{ textAlign: 'center', color: '#475569', marginTop: '30px' }}>
+                  <p>Queue is empty.</p>
+                </div>
+              )}
+            </div>
           </div>
 
-          {/* Queue List */}
-          <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {queue.length > 0 ? (
-              queue.map((item, idx) => {
-                const hasLocal = localSongs.some(s => s.file_hash === item.file_hash);
-                return (
+          {/* Library Section */}
+          <div style={{ 
+            borderTop: '1px solid rgba(255, 255, 255, 0.05)', 
+            paddingTop: '20px', 
+            display: 'flex', 
+            flexDirection: 'column', 
+            flex: 0.8, 
+            overflow: 'hidden' 
+          }}>
+            <h3 style={{ fontSize: '16px', fontWeight: '700', marginBottom: '16px' }}>My Library</h3>
+            <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {localSongs.length > 0 ? (
+                localSongs.map((song) => (
                   <div 
-                    key={item.id}
+                    key={song.id}
                     style={{
                       display: 'flex',
                       alignItems: 'center',
-                      padding: '12px 16px',
-                      background: 'rgba(255, 255, 255, 0.02)',
-                      border: '1px solid rgba(255, 255, 255, 0.04)',
+                      padding: '10px 14px',
+                      background: 'rgba(255, 255, 255, 0.01)',
+                      border: '1px solid rgba(255, 255, 255, 0.03)',
                       borderRadius: '12px'
                     }}
                   >
-                    <div style={{ display: 'flex', flexDirection: 'column' }}>
-                      <span style={{ fontSize: '14px', fontWeight: '600' }}>{item.title}</span>
-                      <span style={{ fontSize: '12px', color: '#94a3b8', marginTop: '2px' }}>
-                        {item.artist} • added by {item.added_by_name}
+                    <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                      <span style={{ fontSize: '13px', fontWeight: '600', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>{song.title}</span>
+                      <span style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                        {song.artist}
                       </span>
                     </div>
 
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginLeft: 'auto' }}>
-                      {/* Local Availability Badge */}
-                      <div style={{
-                        padding: '2px 6px',
-                        borderRadius: '4px',
-                        fontSize: '10px',
-                        fontWeight: '700',
-                        background: hasLocal ? 'rgba(34, 197, 94, 0.1)' : 'rgba(239, 68, 68, 0.1)',
-                        color: hasLocal ? '#22c55e' : '#ef4444',
-                        border: `1px solid ${hasLocal ? 'rgba(34, 197, 94, 0.2)' : 'rgba(239, 68, 68, 0.2)'}`
-                      }}>
-                        {hasLocal ? 'LOCAL FILE AVAILABLE' : 'FILE MISSING'}
-                      </div>
-
-                      {/* Vote Buttons */}
-                      <button 
-                        onClick={() => voteOnItem(item.id, 'up')}
-                        style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#94a3b8' }}
-                      >
-                        <ArrowUp size={16} />
-                      </button>
-                      <span style={{ fontSize: '13px', fontWeight: '700' }}>
-                        {(item.upvotes || 0) - (item.downvotes || 0)}
-                      </span>
-                      <button 
-                        onClick={() => voteOnItem(item.id, 'down')}
-                        style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#94a3b8' }}
-                      >
-                        <ArrowDown size={16} />
-                      </button>
-
-                      {isHost && (
-                        <button 
-                          onClick={() => removeFromQueue(item.id)}
-                          style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#ef4444', marginLeft: '6px' }}
-                        >
-                          <Trash size={14} />
-                        </button>
-                      )}
-                    </div>
+                    <button
+                      onClick={() => addToQueue(song.id)}
+                      className="ghost-btn"
+                      style={{
+                        marginLeft: 'auto',
+                        padding: '4px 8px',
+                        fontSize: '11px',
+                        borderRadius: '6px',
+                        borderColor: 'rgba(139, 92, 246, 0.3)',
+                        color: '#8b5cf6',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '2px',
+                        flexShrink: 0
+                      }}
+                    >
+                      <Plus size={10} />
+                      Queue
+                    </button>
                   </div>
-                );
-              })
-            ) : (
-              <div style={{ textAlign: 'center', color: '#475569', marginTop: '60px' }}>
-                <p>Queue is empty.</p>
-              </div>
-            )}
+                ))
+              ) : (
+                <div style={{ textAlign: 'center', color: '#475569', marginTop: '20px' }}>
+                  <p style={{ fontSize: '12px', margin: 0 }}>Scan local music to add them here.</p>
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
