@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  api:
+    image: node:18-alpine
+    working_dir: /app
+    volumes:
+      - .:/app
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - DATABASE_URL=postgresql://syncbeats:syncbeats@db:5432/syncbeats
+      - REDIS_URL=redis://redis:6379
+      - JWT_ACCESS_SECRET=supersecretaccesskeychangeinprod123!
+      - JWT_REFRESH_SECRET=supersecretrefreshkeychangeinprod456!
+      - JWT_ACCESS_EXPIRY=15m
+      - JWT_REFRESH_EXPIRY=7d
+    command: sh -c "npm install && npm start"
+    depends_on:
+      - db
+      - redis
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=syncbeats
+      - POSTGRES_PASSWORD=syncbeats
+      - POSTGRES_DB=syncbeats
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  pgdata:
